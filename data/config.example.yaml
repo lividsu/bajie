@@ -1,0 +1,16 @@
+# Service-level settings. Runtime config lives under data/, not .env.
+service:
+  # websocket: start Feishu long-connection workers.
+  # webhook: only serve HTTP callbacks.
+  # both/ws: aliases that keep WebSocket enabled.
+  run_mode: websocket
+
+  host: 0.0.0.0
+  port: 3002
+  debug: true
+
+  tenants_dir: data/tenants
+
+  # Used by the root callback "/". Tenant-specific callbacks use
+  # "/tenant/{tenant_id}/callback".
+  default_tenant_id: example
