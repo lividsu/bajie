@@ -9,6 +9,7 @@ import time
 import yaml
 
 from core.bounded_cache import PersistentTTLBoundedSet
+from core.conversation_state import ConversationStateManager
 from core.skills_loader import SkillsLoader
 
 
@@ -53,6 +54,13 @@ class TenantLimits:
 
 
 @dataclass(frozen=True)
+class TenantFeatures:
+    compile_and_execute: bool = True
+    memory_system: bool = True
+    clarification_loop: bool = True
+
+
+@dataclass(frozen=True)
 class TenantConfig:
     tenant_id: str
     name: str
@@ -60,6 +68,7 @@ class TenantConfig:
     feishu: FeishuConfig
     llm: LlmConfig
     limits: TenantLimits = field(default_factory=TenantLimits)
+    features: TenantFeatures = field(default_factory=TenantFeatures)
 
     @property
     def skills_dir(self) -> Path:
@@ -81,6 +90,10 @@ class TenantConfig:
     def generated_images_dir(self) -> Path:
         return self.cache_dir / "generated_images"
 
+    @property
+    def memory_dir(self) -> Path:
+        return self.root_dir / "memory"
+
 
 @dataclass
 class TenantContext:
@@ -88,6 +101,7 @@ class TenantContext:
     message_api_client: MessageApiClient
     message_processor: MessageProcessor
     processed_events: PersistentTTLBoundedSet
+    conversation_state_manager: ConversationStateManager
     started_at: float = field(default_factory=time.time)
 
     @property
@@ -141,6 +155,7 @@ class TenantRegistry:
         tenant_config.image_cache_dir.mkdir(parents=True, exist_ok=True)
         tenant_config.file_cache_dir.mkdir(parents=True, exist_ok=True)
         tenant_config.generated_images_dir.mkdir(parents=True, exist_ok=True)
+        tenant_config.memory_dir.mkdir(parents=True, exist_ok=True)
 
         skills_loader = SkillsLoader(
             workspace=Path.cwd(),
@@ -154,6 +169,8 @@ class TenantRegistry:
             chat_handler=chat_handler,
             generated_images_dir=tenant_config.generated_images_dir,
         )
+        conversation_state_manager = ConversationStateManager()
+        message_processor.conversation_state_manager = conversation_state_manager
         message_api_client = MessageApiClient(
             tenant_config.feishu.app_id,
             tenant_config.feishu.app_secret,
@@ -172,6 +189,7 @@ class TenantRegistry:
             message_api_client=message_api_client,
             message_processor=message_processor,
             processed_events=processed_events,
+            conversation_state_manager=conversation_state_manager,
         )
 
     def _load_yaml_config(self, config_path: Path, tenant_dir: Path) -> TenantConfig:
@@ -186,4 +204,5 @@ class TenantRegistry:
             feishu=FeishuConfig(**(raw.get("feishu", {}) or {})),
             llm=LlmConfig(**(raw.get("llm", {}) or {})),
             limits=TenantLimits(**raw.get("limits", {})),
+            features=TenantFeatures(**raw.get("features", {})),
         )

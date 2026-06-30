@@ -50,6 +50,7 @@ def execute(message: str, chat_id: str, processor, **kwargs) -> dict:
     image_paths = kwargs.get("image_paths", [])
     num_images = len(image_paths) if image_paths else 0
     use_pro = kwargs.get("use_pro", False)
+    task_mode = kwargs.get("task_mode") or ("edit" if has_images else "generate")
     current_attempt = kwargs.get("current_attempt", 0)
     original_prompt = kwargs.get("original_prompt", message)
 
@@ -98,7 +99,10 @@ def execute(message: str, chat_id: str, processor, **kwargs) -> dict:
         if num_images == 1:
             prompt = message if message else "基于这张图片进行创意改编"
         else:
-            prompt = message if message else "基于这些图片进行创意合成或融合"
+            if task_mode == "compose":
+                prompt = message if message else "基于这些图片进行创意合成或融合"
+            else:
+                prompt = message if message else "基于这些图片执行指定编辑，保持输出目标清晰"
 
         target_aspect_ratio = requested_aspect_ratio(message, allow_extreme=True)
         recompose_canvas = num_images == 1 and _is_canvas_recompose_request(message, target_aspect_ratio)

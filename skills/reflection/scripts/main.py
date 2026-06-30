@@ -33,6 +33,33 @@ def _build_reflection_text(reflection_result: dict, should_retry: bool, improved
     return "\n".join(lines)
 
 
+def _has_hard_failure(reflection_result: dict) -> bool:
+    text = " ".join(
+        str(part)
+        for part in [
+            reflection_result.get("analysis", ""),
+            " ".join(str(issue) for issue in reflection_result.get("issues") or []),
+        ]
+    ).lower()
+    hard_failure_keywords = (
+        "主体缺失",
+        "没有主体",
+        "缺少主体",
+        "数量错误",
+        "数量不对",
+        "模式错误",
+        "关键约束违背",
+        "不符合白底",
+        "subject missing",
+        "missing subject",
+        "wrong count",
+        "count mismatch",
+        "mode mismatch",
+        "violates key constraint",
+    )
+    return any(keyword in text for keyword in hard_failure_keywords)
+
+
 def execute(message: str, chat_id: str, processor, **kwargs) -> dict:
     """
     Execute the reflection skill.
@@ -82,6 +109,11 @@ def execute(message: str, chat_id: str, processor, **kwargs) -> dict:
         score = 0
     min_score = getattr(processor, "min_satisfactory_score", 7)
     score_passed = score >= min_score
+    hard_failure = _has_hard_failure(reflection_result)
+    if hard_failure:
+        score_passed = False
+        reflection_result['is_satisfactory'] = False
+        print("⚠️ 检测到硬失败条件，本轮自检强制不通过")
     if score_passed and not reflection_result.get('is_satisfactory'):
         print(f"✅ 分数 {score}/10 已达到阈值 {min_score}/10，覆盖模型的未通过判断")
     reflection_result['score'] = score

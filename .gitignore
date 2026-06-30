@@ -36,5 +36,6 @@ data/tenants/*
 image_cache/
 file_cache/
 generated_images/
+tmp/
 
 .DS_Store

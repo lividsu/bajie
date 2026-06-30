@@ -31,6 +31,7 @@ class ExecuteSkillTool(Tool):
             file_paths=runtime.get("file_paths"),
             file_exts=runtime.get("file_exts"),
             use_pro=runtime.get("use_pro", False),
+            task_mode=runtime.get("task_mode"),
             current_attempt=runtime.get("current_attempt", 0),
             original_prompt=runtime.get("original_prompt", runtime.get("message", ""))
         )

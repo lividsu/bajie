@@ -8,7 +8,12 @@ import re
 import uuid
 from pathlib import Path
 from .chat_client import ChatHandler
+from .compiler import ExecutionCompiler
 from core.skills_loader import SkillsLoader
+from core.conversation_state import ConversationStateManager
+from core.executor import ExecutionRunner
+from core.intent import IntentSignal, IntentParser
+from core.memory import MemoryStore
 from core.tools import ToolRegistry, ExecuteSkillTool, FeishuDocsTool
 from core.image_utils import format_image_generation_info, requested_aspect_ratio, restore_source_dimensions
 
@@ -60,6 +65,12 @@ class MessageProcessor:
         self.generated_images_dir = generated_images_dir or (Path(os.getcwd()) / "generated_images")
         self.generated_images_dir.mkdir(parents=True, exist_ok=True)
         self.message_api_client = None
+        self.intent_parser = IntentParser()
+        self.conversation_state_manager = ConversationStateManager()
+        memory_dir = getattr(tenant_config, "memory_dir", None) or (Path(os.getcwd()) / "memory" / "default")
+        self.memory_store = MemoryStore(Path(memory_dir))
+        self.execution_compiler = ExecutionCompiler(self.chat_handler, self.skills_loader)
+        self.execution_runner = ExecutionRunner(self)
 
     def _check_pro_mode(self, message: str) -> Tuple[bool, str]:
         """
@@ -688,6 +699,105 @@ class MessageProcessor:
         action = self._extract_json_object(response)
         return action
 
+    def _feature_enabled(self, name: str) -> bool:
+        features = getattr(self.tenant_config, "features", None)
+        if features is None:
+            return False
+        return bool(getattr(features, name, False))
+
+    def _intent_for_message(
+        self,
+        *,
+        message: str,
+        chat_id: str,
+        primary_skill: str,
+        has_images: bool,
+        num_images: int,
+        has_files: bool,
+        num_files: int,
+    ) -> IntentSignal:
+        pending = self.conversation_state_manager.get_pending(chat_id)
+        if pending and self.intent_parser.looks_like_clarification_reply(message):
+            resolved_item = self.conversation_state_manager.resolve_pending(chat_id, message)
+            if resolved_item:
+                return IntentSignal(
+                    action="decompose",
+                    items=[resolved_item],
+                    parent_item_id=resolved_item.id,
+                )
+        return self.intent_parser.parse(
+            message,
+            primary_skill=primary_skill,
+            has_images=has_images,
+            num_images=num_images,
+            has_files=has_files,
+            num_files=num_files,
+            has_pending_clarification=bool(pending),
+        )
+
+    def _maybe_clarify(self, intent: IntentSignal, chat_id: str) -> dict | None:
+        if not self._feature_enabled("clarification_loop"):
+            return None
+        if intent.action != "decompose":
+            return None
+        ambiguous = next((item for item in intent.items if item.ambiguity_flags), None)
+        if not ambiguous:
+            return None
+        if "subject_count" in ambiguous.ambiguity_flags:
+            request = self.conversation_state_manager.create_subject_count_clarification(
+                chat_id,
+                ambiguous,
+            )
+            options = " / ".join(option.label for option in request.options)
+            return self._normalize_result({"text": f"{request.question}\n可选：{options}"})
+        return None
+
+    def _compile_and_execute(
+        self,
+        *,
+        intent: IntentSignal,
+        message: str,
+        chat_id: str,
+        primary_skill: str,
+        image_paths: List[str] | None,
+        file_paths: List[str] | None,
+        file_exts: List[str] | None,
+        use_pro: bool,
+        original_prompt: str,
+    ) -> dict:
+        memory_snippets: list[str] = []
+        if self._feature_enabled("memory_system"):
+            try:
+                self.memory_store.ensure_exists()
+                memory_snippets = self.memory_store.snippets_for(
+                    message,
+                    skills=[primary_skill] if primary_skill else None,
+                )
+            except Exception as exc:
+                print(f"Memory lookup skipped: {exc}")
+
+        plan = self.execution_compiler.compile(
+            intent=intent,
+            original_message=message,
+            primary_skill=primary_skill,
+            image_paths=image_paths,
+            file_paths=file_paths,
+            use_pro=use_pro,
+            memory_snippets=memory_snippets,
+        )
+        result = self.execution_runner.execute_plan(
+            plan,
+            chat_id=chat_id,
+            original_prompt=original_prompt,
+            file_exts=file_exts,
+        )
+        result["compiled_plan"] = {
+            "summary": plan.summary,
+            "execution_mode": plan.execution_mode,
+            "task_count": len(plan.tasks),
+        }
+        return result
+
     def _run_tool_loop(
         self,
         message: str,
@@ -723,6 +833,34 @@ class MessageProcessor:
         if current_attempt > 0 and not has_files:
             primary_skill = "image_gen"
         print(f"📋 首选 Skill: {primary_skill}")
+        if current_attempt == 0 and allow_parallel_outputs and self._feature_enabled("compile_and_execute"):
+            intent = self._intent_for_message(
+                message=message,
+                chat_id=chat_id,
+                primary_skill=primary_skill,
+                has_images=has_images,
+                num_images=num_images,
+                has_files=has_files,
+                num_files=num_files,
+            )
+            clarification = self._maybe_clarify(intent, chat_id)
+            if clarification:
+                return clarification
+            if intent.action == "decompose":
+                try:
+                    return self._compile_and_execute(
+                        intent=intent,
+                        message=message,
+                        chat_id=chat_id,
+                        primary_skill=primary_skill,
+                        image_paths=image_paths,
+                        file_paths=file_paths,
+                        file_exts=file_exts,
+                        use_pro=use_pro,
+                        original_prompt=original_prompt,
+                    )
+                except Exception as exc:
+                    print(f"Compile-and-execute fallback to v1: {exc}")
         output_count = self._requested_output_count(message)
         if allow_parallel_outputs and current_attempt == 0 and primary_skill == "image_gen" and output_count > 1:
             return self._run_parallel_output_tasks(
