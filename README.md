@@ -139,7 +139,13 @@ Tenant runtime files are isolated under:
 data/tenants/{tenant_id}/cache/images
 data/tenants/{tenant_id}/cache/files
 data/tenants/{tenant_id}/cache/generated_images
+data/tenants/{tenant_id}/cache/processed_events.sqlite3
 ```
+
+Processed Feishu event/message ids are persisted in SQLite so restarted
+workers do not redo the same image task when Feishu replays an old message.
+Messages older than the worker startup time minus
+`limits.stale_message_grace_seconds` are treated as stale replays and skipped.
 
 Real tenant data under `data/tenants/*` is ignored by Git. Only templates under
 `data/tenants/example/` are intended to be committed.

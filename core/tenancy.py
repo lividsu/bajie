@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 
 import yaml
 
-from core.bounded_cache import TTLBoundedSet
+from core.bounded_cache import PersistentTTLBoundedSet
 from core.skills_loader import SkillsLoader
 
 
@@ -46,6 +47,7 @@ class TenantLimits:
     file_retention_days: int = 15
     processed_event_ttl_seconds: int = 86400
     processed_event_cache_size: int = 10000
+    stale_message_grace_seconds: int = 300
     max_tool_iterations: int = 5
     ai_test_mode: bool = False
 
@@ -85,7 +87,8 @@ class TenantContext:
     config: TenantConfig
     message_api_client: MessageApiClient
     message_processor: MessageProcessor
-    processed_events: TTLBoundedSet
+    processed_events: PersistentTTLBoundedSet
+    started_at: float = field(default_factory=time.time)
 
     @property
     def tenant_id(self) -> str:
@@ -159,8 +162,9 @@ class TenantRegistry:
             file_cache_dir=tenant_config.file_cache_dir,
         )
         message_processor.message_api_client = message_api_client
-        processed_events = TTLBoundedSet(
-            max_size=tenant_config.limits.processed_event_cache_size,
+        processed_events = PersistentTTLBoundedSet(
+            db_path=tenant_config.cache_dir / "processed_events.sqlite3",
+            max_size=tenant_config.limits.processed_event_cache_size * 2,
             ttl_seconds=tenant_config.limits.processed_event_ttl_seconds,
         )
         return TenantContext(

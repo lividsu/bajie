@@ -1,6 +1,7 @@
 import json
 import logging
 import threading
+import time
 
 from core.bot import (
     download_images,
@@ -31,6 +32,21 @@ def _parse_file_item(content_str):
     except Exception as e:
         logging.error(f"Failed to parse file message: {e}")
     return None
+
+
+def _message_create_time_seconds(message) -> float | None:
+    raw = getattr(message, "create_time", None)
+    if raw in (None, ""):
+        return None
+    try:
+        timestamp = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if timestamp > 10_000_000_000_000:
+        return timestamp / 1_000_000
+    if timestamp > 10_000_000_000:
+        return timestamp / 1_000
+    return timestamp
 
 
 def _run_with_task_reaction(tenant, message_id, func):
@@ -69,7 +85,7 @@ def message_receive_event_handler(req_data, tenant):
     print(f"Received message event for tenant={tenant.tenant_id}")
 
     event_id = req_data.header.event_id
-    if not tenant.processed_events.try_add(event_id):
+    if not tenant.processed_events.try_add(f"event:{event_id}"):
         print(f"Skipping duplicated event: {event_id}")
         return {}
 
@@ -81,6 +97,24 @@ def message_receive_event_handler(req_data, tenant):
     sender_id = req_data.event.sender.sender_id
     message = req_data.event.message
     open_id = sender_id.open_id
+    message_id = getattr(message, "message_id", "")
+    if message_id and not tenant.processed_events.try_add(f"message:{message_id}"):
+        print(f"Skipping duplicated message: {message_id}")
+        return {}
+
+    message_created_at = _message_create_time_seconds(message)
+    stale_grace_seconds = max(0, int(getattr(tenant_config.limits, "stale_message_grace_seconds", 300)))
+    if (
+        message_created_at is not None
+        and stale_grace_seconds > 0
+        and message_created_at < tenant.started_at - stale_grace_seconds
+    ):
+        age_seconds = int(time.time() - message_created_at)
+        print(
+            "Skipping stale message replay: "
+            f"message_id={message_id}, age_seconds={age_seconds}"
+        )
+        return {}
 
     print(f"Message type: {message.message_type}, chat type: {message.chat_type}")
 
